@@ -1,0 +1,167 @@
+import * as THREE from 'three';
+import { ARENA_HALF, TILE_SIZE, MAP_TILES, MAP_WALLS } from '../../shared/config.js';
+
+const BLADE_COUNT = 80000;
+const PATCH = 96;
+const BLADE_HEIGHT = 0.8;
+const BLADE_HALF_WIDTH = 0.055;
+
+function tileMaskTexture() {
+  const halfCells = Math.ceil(ARENA_HALF / TILE_SIZE);
+  const cells = halfCells * 2 + 1;
+  const data = new Uint8Array(cells * cells).fill(255);
+  for (const t of [...MAP_TILES, ...MAP_WALLS]) {
+    if (t.type === 'grass') continue;
+    const ix = t.gx + halfCells, iz = t.gz + halfCells;
+    if (ix < 0 || iz < 0 || ix >= cells || iz >= cells) continue;
+    data[iz * cells + ix] = 0;
+  }
+  const texture = new THREE.DataTexture(data, cells, cells, THREE.RedFormat, THREE.UnsignedByteType);
+  texture.magFilter = texture.minFilter = THREE.NearestFilter;
+  texture.needsUpdate = true;
+  return { texture, cells, halfCells };
+}
+
+function bladeGeometry() {
+  const geo = new THREE.InstancedBufferGeometry();
+  const w = BLADE_HALF_WIDTH;
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([
+    -w, 0, 0,        w, 0, 0,
+    -w * 0.72, 1 / 3, 0,  w * 0.72, 1 / 3, 0,
+    -w * 0.38, 2 / 3, 0,  w * 0.38, 2 / 3, 0,
+    0, 1, 0,
+  ], 3));
+  geo.setIndex([0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 4, 5, 6]);
+
+  const offsets = new Float32Array(BLADE_COUNT * 2);
+  const rands = new Float32Array(BLADE_COUNT * 4);
+  for (let i = 0; i < BLADE_COUNT; i++) {
+    offsets[i * 2] = Math.random() * PATCH;
+    offsets[i * 2 + 1] = Math.random() * PATCH;
+    rands[i * 4] = Math.random() * Math.PI * 2;
+    rands[i * 4 + 1] = 0.7 + Math.random() * 0.6;
+    rands[i * 4 + 2] = Math.random();
+    rands[i * 4 + 3] = Math.random() * Math.PI * 2;
+  }
+  geo.setAttribute('aOffset', new THREE.InstancedBufferAttribute(offsets, 2));
+  geo.setAttribute('aRand', new THREE.InstancedBufferAttribute(rands, 4));
+  return geo;
+}
+
+export function makeGrass(scene, sunDir) {
+  const GROUND_HALF = ARENA_HALF + 5;
+  const mask = tileMaskTexture();
+  const material = new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([
+      THREE.UniformsLib.fog,
+      {
+        uTime: { value: 0 },
+        uFocus: { value: new THREE.Vector2() },
+        uSunDir: { value: sunDir.clone().normalize() },
+        uTileMask: { value: mask.texture },
+      },
+    ]),
+    side: THREE.DoubleSide,
+    fog: true,
+    vertexShader: `
+      attribute vec2 aOffset;
+      attribute vec4 aRand;
+      uniform float uTime;
+      uniform vec2 uFocus;
+      uniform vec3 uSunDir;
+      uniform sampler2D uTileMask;
+      varying vec3 vColor;
+      varying float vY;
+      #include <fog_pars_vertex>
+
+      const float PATCH = ${PATCH.toFixed(1)};
+      const float HALF_P = ${(PATCH / 2).toFixed(1)};
+      const float BLADE_HEIGHT = ${BLADE_HEIGHT.toFixed(2)};
+      const float GROUND_HALF = ${GROUND_HALF.toFixed(1)};
+      const float TILE = ${TILE_SIZE.toFixed(1)};
+      const float MASK_HALF = ${mask.halfCells.toFixed(1)};
+      const float MASK_N = ${mask.cells.toFixed(1)};
+
+      void main() {
+        // wrap this instance's patch offset to the world cell nearest uFocus;
+        // the anchor (and everything derived from it) is stable in world
+        // space, so the field doesn't crawl as the player moves
+        vec2 anchor = uFocus + mod(aOffset - uFocus + HALF_P, PATCH) - HALF_P;
+
+        float scale = aRand.y;
+        // shrink blades to nothing before the patch edge so the wrap seam
+        // is never visible; fog handles everything beyond
+        scale *= 1.0 - smoothstep(HALF_P * 0.72, HALF_P * 0.97, distance(anchor, uFocus));
+        if (max(abs(anchor.x), abs(anchor.y)) > GROUND_HALF) scale = 0.0;
+        // one nearest-neighbor tap into the tile mask kills blades rooted
+        // on any non-grass cell (cells centered on gx * TILE)
+        vec2 maskUv = (floor(anchor / TILE + 0.5) + MASK_HALF + 0.5) / MASK_N;
+        if (texture2D(uTileMask, maskUv).r < 0.5) scale = 0.0;
+
+        float h = position.y; // 0 at root, 1 at tip
+        float ca = cos(aRand.x), sa = sin(aRand.x);
+
+        // two out-of-phase sines read as gusts rolling across the field
+        float sway =
+          sin(uTime * 1.6 + anchor.x * 0.35 + anchor.y * 0.28 + aRand.w) +
+          0.5 * sin(uTime * 2.7 + anchor.x * 0.13 - anchor.y * 0.19 + aRand.w * 1.7);
+        float bend = 0.07 + sway * 0.085; // constant lean + gust
+        vec2 windDir = vec2(0.842, 0.539);
+
+        // static per-blade slouch in a hashed random direction, so the field
+        // reads tousled instead of combed straight up
+        float hl = fract(sin(dot(aOffset, vec2(12.9898, 78.233))) * 43758.5453);
+        vec2 leanDir = vec2(cos(hl * 6.2832), sin(hl * 6.2832));
+        float lean = 0.05 + hl * 0.3;
+
+        float height = BLADE_HEIGHT * scale;
+        vec3 p = vec3(position.x * ca * scale, h * height, position.x * sa * scale);
+        // quadratic falloff: roots stay planted, tips do the swaying
+        p.xz += (windDir * bend + leanDir * lean) * (h * h * height);
+        p.y -= lean * lean * h * h * height * 0.5; // tip drop from the arc
+
+        vec3 worldPos = vec3(anchor.x + p.x, p.y, anchor.y + p.z);
+
+        // fake lighting: blade-facing normal tilted toward up (blades are
+        // thin, so precise normals matter less than plausible variation),
+        // plus root-darkening AO where blades crowd each other
+        vec3 n = normalize(vec3(-sa, 1.1, ca));
+        float ndl = max(dot(n, uSunDir), 0.0);
+        float light = (0.55 + 0.45 * ndl) * mix(0.42, 1.0, h);
+
+        // olive palette matched to the ground's photo turf so blades read as
+        // part of the same lawn rather than decoration sitting on top of it
+        vec3 base = vec3(0.05, 0.13, 0.03);
+        vec3 tip = mix(vec3(0.20, 0.36, 0.10), vec3(0.38, 0.48, 0.16), aRand.z);
+        vColor = mix(base, tip, h) * light * 1.2;
+        vY = h;
+
+        vec4 mvPosition = modelViewMatrix * vec4(worldPos, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vY;
+      #include <fog_pars_fragment>
+
+      void main() {
+        // waxy sheen where the sun catches the blade tips
+        vec3 col = vColor + vec3(0.05, 0.09, 0.03) * smoothstep(0.75, 1.0, vY);
+        gl_FragColor = vec4(col, 1.0);
+        #include <fog_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+
+  const mesh = new THREE.Mesh(bladeGeometry(), material);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+
+  return (dt, focus) => {
+    material.uniforms.uTime.value += dt;
+    material.uniforms.uFocus.value.set(focus.x, focus.z);
+  };
+}

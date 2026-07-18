@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" href="/icon.png" />
+  <title>florr3d</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@500;700&display=swap" rel="stylesheet" />
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1ea761; }
+    body { font-family: 'Ubuntu', sans-serif; font-weight: 700; }
+    #app canvas { display: block; }
+
+    .stroke { text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000,
+                            0 -2px 0 #000, 0 2px 0 #000, -2px 0 0 #000, 2px 0 0 #000; color: #fff; }
+
+    #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+    #hud > * { pointer-events: auto; }
+
+    /* screen-edge arrows pointing at the nearest flowers (arrows.js) */
+    #arrows { position: fixed; inset: 0; pointer-events: none; z-index: 8; }
+    #arrows .arrow { position: absolute; left: 0; top: 0; }
+    #arrows .arrow.hidden { display: none; }
+    #arrows .glyph { position: absolute; font-size: 30px; color: #ffe763; line-height: 1; }
+    #arrows .label { position: absolute; transform: translate(-50%, 16px);
+                     font-size: 13px; white-space: nowrap; }
+
+    /* top-left status: florr-style pill bars on a dark track */
+    #status { position: absolute; top: 14px; left: 14px; width: 270px; pointer-events: none; }
+    #status .label { font-size: 16px; margin-bottom: 4px; }
+    .barwrap { background: rgba(15,20,15,0.5); border-radius: 999px; height: 24px;
+               padding: 4px; margin-bottom: 8px;
+               box-shadow: inset 0 1px 3px rgba(0,0,0,0.4), 0 1px 0 rgba(255,255,255,0.12); }
+    .barwrap.xp { height: 17px; padding: 3px; }
+    .bartrack { position: relative; height: 100%; }
+    .barfill, .barghost { position: absolute; top: 0; left: 0; height: 100%;
+                          border-radius: 999px; }
+    .barfill { transition: width 0.15s ease-out; }
+    /* red ghost lags behind the green fill to show recent damage, like mob bars */
+    .barghost { background: #d43a2f; transition: width 0.6s ease 0.25s; width: 100%; }
+    #hpfill { background: linear-gradient(180deg, #8bee52, #63cd28); width: 100%; }
+    #xpfill { background: linear-gradient(180deg, #ffe763, #efc73c); width: 0%; }
+
+    /* controls help */
+    #discord { position: absolute; top: 14px; right: 14px; font-size: 14px; color: #fff;
+               background: #5865f2; padding: 6px 14px; border-radius: 999px;
+               text-decoration: none; transition: transform 0.08s; }
+    #discord:hover { transform: scale(1.06); }
+    #help { position: absolute; top: 52px; right: 14px; text-align: right; font-size: 13px;
+            line-height: 1.55; opacity: 0.9; pointer-events: none; }
+
+    /* loadout */
+    #loadout { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+               display: flex; flex-direction: column; align-items: center; gap: 7px; }
+    .petalrow { display: flex; gap: 7px; }
+    .slot { width: 64px; height: 64px; border-radius: 9px; background: rgba(0,0,0,0.16);
+            border: 5px solid rgba(0,0,0,0.13); display: flex; flex-direction: column;
+            align-items: center; justify-content: center; cursor: pointer; position: relative;
+            transition: transform 0.08s; overflow: hidden; }
+    .slot:hover { transform: scale(1.07); }
+    .slot:active { transform: scale(0.98); }
+    .slot.empty { cursor: default; }
+    .slot.empty:hover, .slot.empty:active { transform: none; }
+    .slot.dragover { outline: 3px solid #fff; box-shadow: 0 0 10px rgba(255,255,255,0.7); }
+    .petalrow.secondary .slot { width: 50px; height: 50px; border-width: 4px; border-radius: 7px; }
+    /* reload pie: conic sweep that shrinks clockwise as the petal recharges */
+    .slot .cdpie { position: absolute; inset: 0; pointer-events: none; }
+    /* the source icons have a lot of built-in padding around the icon+label,
+       so scale past 100% and let the slot's overflow:hidden crop it in tight */
+    .slot .picon { width: 100%; height: 100%; object-fit: contain; transform: scale(1.55);
+                   pointer-events: none; }
+    .slot .dot { width: 22px; height: 22px; border-radius: 50%; border: 3px solid rgba(0,0,0,0.35); }
+    .petalrow.secondary .slot .dot { width: 16px; height: 16px; }
+    .slot .pname { font-size: 10px; margin-top: 2px; color: #000; opacity: 0.75; }
+    .petalrow.secondary .slot .pname { font-size: 8px; }
+    .slot .hotkey { position: absolute; top: 2px; right: 5px; font-size: 11px; color: rgba(0,0,0,0.45); }
+
+    /* inventory */
+    #invwrap { position: absolute; bottom: 14px; left: 14px; max-width: 300px; }
+    #invtitle { font-size: 14px; margin-bottom: 5px; }
+    #inventory { display: flex; flex-wrap: wrap; gap: 5px; }
+    .invtile { width: 48px; height: 48px; border-radius: 8px; border: 4px solid rgba(0,0,0,0.35);
+               display: flex; flex-direction: column; align-items: center; justify-content: center;
+               cursor: pointer; position: relative; overflow: hidden;
+               transition: transform 0.08s; }
+    .invtile:hover { transform: scale(1.08); }
+    .invtile.selected { outline: 3px solid #fff; transform: scale(1.12);
+                        box-shadow: 0 0 10px rgba(255,255,255,0.6); }
+    .invtile.dragging { opacity: 0.4; }
+    .invtile .picon { width: 100%; height: 100%; object-fit: contain; transform: scale(1.55);
+                      pointer-events: none; }
+    .invtile .dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(0,0,0,0.35); }
+    .invtile .pname { font-size: 8px; color: #000; opacity: 0.75; }
+    .invtile .count { position: absolute; top: -6px; right: -6px; background: #222; color: #fff;
+                      font-size: 10px; border-radius: 8px; padding: 1px 5px; }
+    #invhint { font-size: 11px; margin-top: 5px; opacity: 0.85; }
+
+    /* petal tooltip: anchored above whichever slot/tile is hovered */
+    #tooltip { position: absolute; width: 220px; padding: 12px 14px; border-radius: 4px;
+               background: rgba(10,22,14,0.75);
+               pointer-events: none; display: none; transform: translate(-50%, -100%); }
+    #tooltip.show { display: block; }
+    #tooltip .tt-head { display: flex; justify-content: space-between; align-items: baseline; }
+    #tooltip .tt-name { font-size: 16px; color: #fff; }
+    #tooltip .tt-reload { font-size: 12px; color: #cfe8d6; opacity: 0.85; }
+    #tooltip .tt-rarity { font-size: 12px; margin-top: 1px; }
+    #tooltip .tt-desc { font-size: 12px; color: #e4efe7; opacity: 0.9; margin-top: 8px; line-height: 1.4; }
+    #tooltip .tt-stats { margin-top: 8px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+    #tooltip .tt-health { color: #78dd39; }
+    #tooltip .tt-damage { color: #e8483c; }
+    #tooltip .tt-heal { color: #ff94c9; }
+
+    /* quality toggle */
+    /* touch controls (created by mobile.js on coarse-pointer devices only) */
+    #joy { position: absolute; bottom: 96px; left: 26px; width: 124px; height: 124px;
+           border-radius: 50%; background: rgba(0, 0, 0, 0.18);
+           border: 2px solid rgba(255, 255, 255, 0.25); touch-action: none; }
+    #joyknob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px;
+               margin: -26px 0 0 -26px; border-radius: 50%;
+               background: rgba(255, 255, 255, 0.45); pointer-events: none; }
+    .touchbtn { position: absolute; right: 16px; width: 56px; height: 56px;
+                border-radius: 50%; background: rgba(0, 0, 0, 0.22);
+                border: 2px solid rgba(255, 255, 255, 0.25);
+                display: flex; align-items: center; justify-content: center;
+                color: rgba(255, 255, 255, 0.85);
+                touch-action: none; user-select: none; }
+    .touchbtn svg { width: 28px; height: 28px; }
+    .touchbtn.held { background: rgba(255, 255, 255, 0.35); }
+    #minimap { position: absolute; bottom: 48px; right: 14px; width: 140px; height: 140px;
+               border: 2px solid rgba(0, 0, 0, 0.35); border-radius: 6px; opacity: 0.92;
+               pointer-events: none; image-rendering: pixelated; }
+    #bottomright { position: absolute; bottom: 14px; right: 14px; display: flex; gap: 8px; }
+    #mutechat, #quality { font-size: 14px; background: rgba(15,20,15,0.6); padding: 6px 14px;
+               border-radius: 999px; cursor: pointer; transition: transform 0.08s; }
+    #mutechat:hover, #quality:hover { transform: scale(1.06); }
+
+    /* death overlay */
+    #death { position: absolute; inset: 0; background: rgba(0,0,0,0.55); display: none;
+             align-items: center; justify-content: center; flex-direction: column; gap: 10px; }
+    #death.show { display: flex; }
+    #death .big { font-size: 44px; }
+    #death .small { font-size: 18px; }
+
+    /* name gate: shown once on load, before the flower gets a name */
+    /* fixed, always on top of the name gate — see the HTML comment above
+       its markup for why this must never live inside #namegate */
+    /* hidden by default — turnstile.js only adds .active while a
+       verification is actually in flight, and removes it the moment one
+       finishes (success or not), so a solved/expired widget never lingers
+       on screen over gameplay */
+    #turnstile-container { display: none; position: fixed; top: 50%; left: 50%;
+                            transform: translate(-50%, -50%); z-index: 50; }
+    #turnstile-container.active { display: block; }
+    #namegate { position: absolute; inset: 0; background: rgba(0,0,0,0.45); display: flex;
+                align-items: center; justify-content: center; flex-direction: column; gap: 14px; }
+    #namegate.hidden { display: none; }
+    #namegate .gametitle { font-size: 52px; }
+    #namegate .namerow { display: flex; gap: 8px; }
+    #nameinput { font-family: inherit; font-weight: 700; font-size: 18px; padding: 10px 16px;
+                 border: 4px solid rgba(0,0,0,0.25); border-radius: 999px; outline: none;
+                 background: #fff; color: #222; width: 240px; text-align: center; }
+    #playbtn { font-family: inherit; font-weight: 700; font-size: 18px; color: #fff;
+               background: #74d939; cursor: pointer;
+               border: 4px solid #57a32b; border-radius: 999px; padding: 10px 26px;
+               transition: transform 0.08s; }
+    #playbtn:hover { transform: scale(1.06); }
+    #playbtn:active { transform: scale(0.97); }
+    #authrow { display: flex; gap: 10px; align-items: center; font-size: 14px; min-height: 34px; }
+    #loginbtn { font-weight: 700; font-size: 14px; color: #fff; text-decoration: none;
+                background: #5865f2; border: 3px solid #4351c9; border-radius: 999px;
+                padding: 6px 16px; transition: transform 0.08s; }
+    #loginbtn:hover { transform: scale(1.06); }
+    #authrow .hidden, #loginbtn.hidden { display: none; }
+    #logoutbtn { color: #cfd4ff; margin-left: 6px; cursor: pointer; text-decoration: underline; }
+    #loginnudge { font-size: 14px; color: #ffe763; text-align: center; line-height: 1.5; }
+    #loginnudge.hidden { display: none; }
+
+    /* chat: hidden pill above the loadout bar, opened with Enter */
+    #chatbox { position: absolute; bottom: 158px; left: 50%; transform: translateX(-50%);
+               display: none; }
+    #chatbox.show { display: block; }
+    #chatinput { font-family: inherit; font-weight: 700; font-size: 15px; padding: 8px 14px;
+                 border: 4px solid rgba(0,0,0,0.25); border-radius: 999px; outline: none;
+                 background: #fff; color: #222; width: 280px; text-align: center; }
+
+    /* toasts */
+    #toasts { position: absolute; top: 90px; left: 50%; transform: translateX(-50%);
+              display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
+    .toast { font-size: 16px; background: rgba(15,20,15,0.6); padding: 5px 16px;
+             border-radius: 999px; animation: toastfade 2.5s forwards; }
+    @keyframes toastfade { 0% { opacity: 0; transform: translateY(8px); }
+      12% { opacity: 1; transform: translateY(0); } 75% { opacity: 1; } 100% { opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <div id="status">
+      <div class="label stroke" id="lvltext">Lvl 1</div>
+      <div class="barwrap">
+        <div class="bartrack">
+          <div class="barghost" id="hpghost"></div>
+          <div class="barfill" id="hpfill"></div>
+        </div>
+      </div>
+      <div class="barwrap xp"><div class="bartrack"><div class="barfill" id="xpfill"></div></div></div>
+    </div>
+    <a id="discord" class="stroke" href="https://discord.gg/pSkDVSqGkt" target="_blank" rel="noopener">Join the Discord</a>
+    <div id="help" class="stroke">
+      Move — mouse<br/>
+      Attack / Defend — left / right click or Space / Shift<br/>
+      Swap petal — [1..5] &nbsp; Swap rows — [R]<br/>
+      Rotation speed — [Q]/[E]<br/>
+      First person (WASD) — [F]
+    </div>
+    <div id="loadout">
+      <div class="petalrow primary" id="rowPrimary"></div>
+      <div class="petalrow secondary" id="rowSecondary"></div>
+    </div>
+    <div id="invwrap">
+      <div id="invtitle" class="stroke">Inventory</div>
+      <div id="inventory"></div>
+      <div id="invhint" class="stroke">Click a petal, then a slot to equip</div>
+    </div>
+    <div id="bottomright">
+      <div id="mutechat" class="stroke"></div>
+      <div id="quality" class="stroke"></div>
+    </div>
+    <div id="tooltip">
+      <div class="tt-head"><span class="tt-name"></span><span class="tt-reload"></span></div>
+      <div class="tt-rarity"></div>
+      <div class="tt-desc"></div>
+      <div class="tt-stats">
+        <div class="tt-health"></div>
+        <div class="tt-damage"></div>
+        <div class="tt-heal"></div>
+      </div>
+    </div>
+    <div id="toasts"></div>
+    <div id="chatbox">
+      <!-- maxlength set from the shared CHAT_MAX_LEN in main.js -->
+      <input id="chatinput" placeholder="Say something…" autocomplete="off" />
+    </div>
+    <!-- Cloudflare Turnstile renders here — deliberately OUTSIDE #namegate,
+         which is hidden the instant Play is clicked (before the join
+         actually completes). If it lived inside the gate, a session
+         Cloudflare decided needed a real interactive check would have its
+         only way to complete that check vanish out from under it,
+         hanging the join forever. Invisible for most players; a visible
+         checkbox/challenge only for the rest. -->
+    <div id="turnstile-container"></div>
+    <div id="namegate">
+      <div class="gametitle stroke">florr3d</div>
+      <div class="namerow">
+        <!-- maxlength set from the shared NAME_MAX_LEN in main.js -->
+        <input id="nameinput" placeholder="Guest" autocomplete="off" />
+        <button id="playbtn">Play</button>
+      </div>
+      <div id="authrow">
+        <a id="loginbtn" class="hidden" href="/auth/discord">Sign in with Discord</a>
+        <span id="authstate" class="stroke"></span>
+      </div>
+      <div id="loginnudge" class="stroke hidden">Guest progress is lost when the page reloads.<br />Sign in to keep your petals and level!</div>
+    </div>
+    <div id="death">
+      <div class="big stroke">You died</div>
+      <div class="small stroke" id="deathtimer">Respawning…</div>
+    </div>
+  </div>
+  <script type="module" src="/src/boot.js"></script>
+</body>
+</html>
